@@ -2,13 +2,12 @@ import numpy as np
 import pandas as pd
 import ot 
 from sklearn.preprocessing import normalize 
+from scipy.spatial.distance import cdist
 from bregman import *
+import matplotlib.pyplot as plt 
+from utils import *
 
 def unit_normalize(data, norm="l2", bySample=True):
-	"""
-	Default norm used is l2-norm. Other options: "l1", and "max"
-	If bySample==True, then we independently normalize each sample. If bySample==False, then we independently normalize each feature
-	"""
 	assert (norm in ["l1","l2","max"]), "Norm argument has to be either one of 'max', 'l1', or 'l2'."
 
 	if bySample==True:
@@ -19,7 +18,6 @@ def unit_normalize(data, norm="l2", bySample=True):
 	return normalize(data, norm=norm, axis=axis) 
 
 def random_gamma_init(p, q, **kwargs):
-	"""Returns random coupling matrix with marginal p,q"""
 	rvs = stats.beta(1e-1, 1e-1).rvs
 	S = random(len(p), len(q), density=1, data_rvs=rvs)
 	return sinkhorn_scaling(p, q, S.A, **kwargs)
@@ -96,7 +94,7 @@ def barycentric_projection(source, target, couplingMatrix):
 	transported_data= np.matmul(P, target)
 	return transported_data
 
-def coot(X1,X2, w1=None, w2=None,v1=None,v2=None,niter=10,algo="sinkhorn",reg=0,algo2="sinkhorn", reg2=0,verbose=True,random_init=False, C_lin=(None, None)):
+def scootr(X1,X2, w1=None, w2=None,v1=None,v2=None,niter=10,algo="sinkhorn",reg=0,algo2="sinkhorn", reg2=0,k=25, alpha=0.5, verbose=True,random_init=False,log=False, C_lin=(None, None)):
 
 	"""Returns COOT between two datasets X1,X2 (see [1])
 
@@ -182,6 +180,11 @@ def coot(X1,X2, w1=None, w2=None,v1=None,v2=None,niter=10,algo="sinkhorn",reg=0,
 		Ts = random_gamma_init(w1, w2)
 		Tv = random_gamma_init(v1, v2)
 
+	#compute graph distances based on k:
+	Cx=compute_graphDist(X1,k)
+	Cy=compute_graphDist(X2,k)
+	C2=(Cx-Cy)**2
+
 	constC_s, hC1_s, hC2_s = init_matrix_C(X1, X2, v1, v2)
 
 	constC_v, hC1_v, hC2_v = init_matrix_C(X1.T, X2.T, w1, w2)
@@ -195,25 +198,24 @@ def coot(X1,X2, w1=None, w2=None,v1=None,v2=None,niter=10,algo="sinkhorn",reg=0,
 		Tvold = Tv
 		costold = cost
 
-		M = constC_s - np.dot(hC1_s, Tv).dot(hC2_s.T)
+		Ms = cdist(X1, np.transpose(np.matmul(Tv,np.transpose(X2))), metric="euclidean")
+		Ms=alpha*C2+(1-alpha)*Ms
 		if C_lin_samp is not None:
-			M = M + C_lin_samp
+			Ms = Ms + C_lin_samp
 		if algo == "emd":
-			Ts = ot.emd(w1, w2, M, numItermax=1e7)
+			Ts = ot.emd(w1, w2, Ms, numItermax=1e7)
 		elif algo == "sinkhorn":
-			Ts = ot.sinkhorn(w1, w2, M, reg)
-
-		M = constC_v - np.dot(hC1_v, Ts).dot(hC2_v.T)
-
+			Ts = ot.sinkhorn(w1, w2, Ms, reg)
+			
+		Mv = cdist(normalize(np.transpose(X1)), normalize(np.transpose(np.matmul(Ts,X2))), metric="euclidean")
 		if C_lin_feat is not None:
-			M = M + C_lin_feat
+			Mv = Mv + C_lin_feat
 		if algo2 == "emd":
-			Tv = ot.emd(v1, v2, M, numItermax=1e7)
+			Tv = ot.emd(v1, v2, Mv, numItermax=1e7)
 		elif algo2 == "sinkhorn":
-			Tv = ot.sinkhorn(v1, v2, M, reg2)
-
+			Tv = ot.sinkhorn(v1, v2, Mv, reg2)
 		delta = np.linalg.norm(Ts - Tsold) + np.linalg.norm(Tv - Tvold)
-		cost = np.sum(M * Tv) + np.sum(C_lin_samp * Ts)
+		cost = np.sum(Mv * Tv) + np.sum(Ms*Ts)
 
 		if log:
 			log_out["cost"].append(cost)
@@ -221,17 +223,12 @@ def coot(X1,X2, w1=None, w2=None,v1=None,v2=None,niter=10,algo="sinkhorn",reg=0,
 		if verbose:
 			print("Delta: {0}  Loss: {1}".format(delta, cost))
 
-		if delta < 1e-16 or np.abs(costold - cost) < 1e-7:
+		if delta < 1e-5 or np.abs(costold - cost) < 1e-7:
 			if verbose:
-				print("converged at iter ", i)
+				print("converged at iter ", i+1)
 			break
 	return Ts, Tv, cost, log_out
 
-methyl=normalize(np.genfromtxt("../data/scGEM_methyl.txt", delimiter=" "))
-rna=normalize(np.genfromtxt("../data/scGEM_rna.txt", delimiter=" "))
-
-print(methyl.shape, rna.shape)
-coot(rna,methyl)
 
 
 
